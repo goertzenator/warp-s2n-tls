@@ -1,0 +1,6 @@
+packages: .
+
+-- During development, use the local s2n-tls[-sys] package
+optional-packages:
+  ../s2n-tls-sys
+  ../s2n-tls

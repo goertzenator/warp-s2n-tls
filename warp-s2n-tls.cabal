@@ -1,0 +1,67 @@
+cabal-version:      3.0
+name:               warp-s2n-tls
+version:            0.1.0.0
+synopsis:           TLS support for Warp via s2n-tls
+description:
+    This package provides TLS support for the Warp web server using
+    the s2n-tls library, an alternative to the warp-tls package.
+
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             Your Name
+maintainer:         your.email@example.com
+copyright:          2026 Your Name
+category:           Web
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+                    README.md
+tested-with:        GHC == 9.6.4
+                  , GHC == 9.8.2
+
+source-repository head
+    type:     git
+    location: https://github.com/yourusername/warp-s2n-tls.git
+
+library
+    exposed-modules:    Network.Wai.Handler.WarpS2N
+    build-depends:      base >= 4.16 && < 5
+                      , warp >= 3.3 && < 4
+                      , wai >= 3.2 && < 4
+                      , s2n-tls
+                      , s2n-tls-sys
+                      , bytestring
+                      , network >= 3.0
+                      , streaming-commons
+    hs-source-dirs:     src
+    default-language:   GHC2021
+    default-extensions: OverloadedRecordDot
+    ghc-options:        -Wall
+
+test-suite warp-s2n-tls-test
+    type:               exitcode-stdio-1.0
+    main-is:            Main.hs
+    other-modules:      TestUtils
+                      , CertLoadingTests
+                      , IntegrationTests
+                      , ProtocolTests
+    build-depends:      base >= 4.16 && < 5
+                      , warp-s2n-tls
+                      , warp
+                      , wai
+                      , s2n-tls
+                      , tasty
+                      , tasty-hunit
+                      , bytestring
+                      , network
+                      , http-types
+                      , async
+                      , tls
+                      , x509-store
+                      , data-default-class
+                      , connection
+                      , unliftio
+    hs-source-dirs:     test
+    default-language:   GHC2021
+    default-extensions: OverloadedStrings
+                      , OverloadedRecordDot
+    ghc-options:        -Wall -threaded -rtsopts -with-rtsopts=-N
