@@ -105,16 +105,85 @@ Common s2n cipher policies:
 
 See s2n-tls documentation for the full list.
 
+## Memory Locking (mlock)
+
+### What is mlock?
+
+s2n-tls uses the Linux `mlock()` system call to lock memory pages containing
+cryptographic secrets (private keys, session keys, etc.) into RAM. This prevents
+the operating system from swapping these pages to disk, where they could
+potentially be recovered by an attacker after your application terminates.
+
+### The RLIMIT_MEMLOCK limit
+
+Linux enforces a per-process limit on how much memory can be locked, controlled
+by `RLIMIT_MEMLOCK`. On many systems, this defaults to just **64 KB** (or even
+32 KB on some Debian versions). Since s2n-tls locks memory for all TLS
+connections and cryptographic operations, this limit can be exhausted quickly
+in applications handling multiple connections.
+
+When the limit is exceeded, you'll see errors like:
+
+```
+Error Message: 'error calling mlock'
+Debug String: 'Error encountered in s2n_mem.c line 106'
+```
+
+### Solutions
+
+**Option 1: Increase the mlock limit (recommended for production)**
+
+Raise the limit for your shell session:
+
+```bash
+ulimit -l unlimited
+```
+
+Or set it to a specific value (in KB):
+
+```bash
+ulimit -l 65536  # 64 MB
+```
+
+For systemd services, add to your unit file:
+
+```ini
+[Service]
+LimitMEMLOCK=infinity
+```
+
+**Option 2: Disable mlock (acceptable for development/testing)**
+
+Set the environment variable to disable memory locking entirely:
+
+```bash
+S2N_DONT_MLOCK=1 ./your-application
+```
+
+### Security considerations
+
+- **With mlock enabled**: Secrets are protected from being written to swap,
+  reducing the risk of recovery from disk. This is the recommended setting
+  for production deployments handling sensitive data.
+
+- **With mlock disabled**: Secrets may be swapped to disk under memory
+  pressure. This is generally acceptable for development, testing, and
+  applications where the threat model doesn't include disk forensics.
+
+- **Note**: Even with mlock enabled, laptop suspend/hibernate modes may
+  save RAM contents to disk regardless of memory locks.
+
 ## Development
 
 ### Running tests
 
-Tests require the `S2N_DONT_MLOCK=1` environment variable to avoid lockable memory
-exhaustion issues:
+Tests require `S2N_DONT_MLOCK=1` to avoid exhausting the default mlock limit:
 
 ```bash
 S2N_DONT_MLOCK=1 cabal test
 ```
+
+See the [Memory Locking](#memory-locking-mlock) section above for details.
 
 ## Known Limitations
 
