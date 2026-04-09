@@ -1,19 +1,18 @@
 module Main (main) where
 
-import Test.Tasty (defaultMain, testGroup)
+import Test.Hspec
 
-import Network.Wai.Handler.WarpS2N (withS2n)
+import Network.Wai.Handler.WarpS2N (Library (..), withS2nTls)
 
-import CertLoadingTests (certLoadingTests)
-import IntegrationTests (integrationTests)
-import ProtocolTests (protocolTests)
+import AppMonadTests (appMonadSpec)
+import CertLoadingTests (certLoadingSpec)
+import IntegrationTests (integrationSpec)
+import ProtocolTests (protocolSpec)
 
 main :: IO ()
-main = withS2n $ \tls ->
-    defaultMain $
-        testGroup
-            "warp-s2n-tls"
-            [ certLoadingTests tls
-            , integrationTests tls
-            , protocolTests tls
-            ]
+main = hspec $ do
+    aroundAll (withS2nTls Linked) $ do
+        describe "Certificate Loading" certLoadingSpec
+        describe "Integration" integrationSpec
+        describe "Protocol" protocolSpec
+        describe "AppMonad ergonomics" appMonadSpec

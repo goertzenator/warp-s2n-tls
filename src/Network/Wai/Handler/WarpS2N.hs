@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
 Module      : Network.Wai.Handler.WarpS2N
@@ -22,7 +23,7 @@ import Network.Wai.Handler.WarpS2N
 import Network.Wai.Handler.Warp (defaultSettings, setPort)
 
 main :: IO ()
-main = withS2n $ \\tls -> do
+main = withS2nTls Linked $ \\tls -> do
     let tlsSet = tlsSettings "cert.pem" "key.pem"
         warpSet = setPort 443 defaultSettings
     runTLS tls tlsSet warpSet myApp
@@ -31,7 +32,7 @@ main = withS2n $ \\tls -> do
 For dynamic library loading:
 
 @
-main = withS2nDynamic "/path/to/libs2n.so" $ \\tls -> do
+main = withS2nTls (Dynamic "/path/to/libs2n.so") $ \\tls -> do
     runTLS tls tlsSet warpSet myApp
 @
 -}
@@ -40,10 +41,10 @@ module Network.Wai.Handler.WarpS2N (
   runTLS,
   runTLSSocket,
 
-  -- * s2n Initialization
-  withS2n,
-  withS2nDynamic,
+  -- * s2n Initialization (re-exported from s2n-tls)
+  withS2nTls,
   S2nTls,
+  Library (..),
 
   -- * Settings
   TLSSettings (..),
@@ -68,7 +69,7 @@ module Network.Wai.Handler.WarpS2N (
   pattern CertAuthRequired,
 ) where
 
-import Control.Exception (bracket, catch)
+import Control.Exception (bracket, catch, onException)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -83,7 +84,6 @@ import Network.Wai.Handler.Warp qualified as Warp
 import Network.Wai.Handler.Warp.Internal qualified as WarpI
 import S2nTls
 import S2nTls qualified as S2N
-import S2nTls.Sys (withDynamicTlsSys, withLinkedTlsSys)
 import System.IO (IOMode (..), SeekMode (..), hSeek, withBinaryFile)
 
 --------------------------------------------------------------------------------
@@ -200,42 +200,6 @@ tlsSettingsChainMemory cert chain key =
     }
 
 --------------------------------------------------------------------------------
--- s2n Initialization
---------------------------------------------------------------------------------
-
-{- | Initialize s2n-tls using the linked library and run an action.
-
-This is the standard way to initialize s2n when your executable
-is linked against libs2n. The s2n handle is valid for the duration
-of the action and can be shared across multiple 'runTLS' calls.
-
-@
-main = withS2n $ \\tls -> do
-    -- Run multiple servers sharing the same s2n initialization
-    concurrently_
-        (runTLS tls settings1 warpSet1 app1)
-        (runTLS tls settings2 warpSet2 app2)
-@
--}
-withS2n :: (S2nTls IO -> IO a) -> IO a
-withS2n f = do
-  withLinkedTlsSys $ \sys -> do
-    withS2nTls sys f
-
-{- | Initialize s2n-tls by dynamically loading libs2n.so from a path.
-
-Use this when you want to load the s2n library at runtime rather
-than linking against it at compile time.
-
-@
-main = withS2nDynamic "/usr/local/lib/libs2n.so" $ \\tls -> do
-    runTLS tls tlsSettings warpSettings app
-@
--}
-withS2nDynamic :: FilePath -> (S2nTls IO -> IO a) -> IO a
-withS2nDynamic path f = withDynamicTlsSys path $ \sys -> withS2nTls sys f
-
---------------------------------------------------------------------------------
 -- Running TLS
 --------------------------------------------------------------------------------
 
@@ -246,7 +210,7 @@ handles TLS connections using s2n-tls.
 
 The 'S2nTls' handle must be obtained via 'withS2n' or 'withS2nDynamic'.
 -}
-runTLS :: S2nTls IO -> TLSSettings -> Settings -> Application -> IO ()
+runTLS :: S2nTls -> TLSSettings -> Settings -> Application -> IO ()
 runTLS tls tlsSet settings app = do
   let host = Warp.getHost settings
       port = Warp.getPort settings
@@ -262,17 +226,19 @@ such as for Unix domain sockets or when using socket activation.
 
 The 'S2nTls' handle must be obtained via 'withS2n' or 'withS2nDynamic'.
 -}
-runTLSSocket :: S2nTls IO -> TLSSettings -> Settings -> Socket -> Application -> IO ()
+runTLSSocket :: S2nTls -> TLSSettings -> Settings -> Socket -> Application -> IO ()
 runTLSSocket tls tlsSet settings sock app = do
   -- Initialize s2n config
   config <- initS2nConfig tls tlsSet
   -- Run Warp with our connection maker
   WarpI.runSettingsConnectionMakerSecure settings (getter tls config) app
  where
-  getter :: S2nTls IO -> S2N.Config -> IO (IO (WarpI.Connection, WarpI.Transport), SockAddr)
+  getter :: S2nTls -> S2N.Config -> IO (IO (WarpI.Connection, WarpI.Transport), SockAddr)
   getter tls' config = do
     (clientSock, clientAddr) <- Socket.accept sock
-    let mkConn = makeTLSConnection tls' config clientSock clientAddr
+    let mkConn =
+          makeTLSConnection tls' config clientSock clientAddr
+            `onException` Socket.close clientSock
     pure (mkConn, clientAddr)
 
 --------------------------------------------------------------------------------
@@ -280,7 +246,7 @@ runTLSSocket tls tlsSet settings sock app = do
 --------------------------------------------------------------------------------
 
 -- | Initialize an s2n Config from TLSSettings.
-initS2nConfig :: S2nTls IO -> TLSSettings -> IO S2N.Config
+initS2nConfig :: S2nTls -> TLSSettings -> IO S2N.Config
 initS2nConfig tls TLSSettings{..} = do
   config <- tls.newConfig
 
@@ -299,7 +265,7 @@ initS2nConfig tls TLSSettings{..} = do
   pure config
 
 -- | Load certificates into an s2n Config based on CertSettings.
-loadCertSettings :: S2nTls IO -> S2N.Config -> CertSettings -> IO ()
+loadCertSettings :: S2nTls -> S2N.Config -> CertSettings -> IO ()
 loadCertSettings tls config certSettings = case certSettings of
   CertFromFile certFile chainFiles keyFile -> do
     certPem <- BS.readFile certFile
@@ -315,7 +281,7 @@ loadCertSettings tls config certSettings = case certSettings of
     loadCertPems tls config certPem chainPems keyPem
 
 -- | Load certificate PEMs into config. Chain certs are concatenated with the main cert.
-loadCertPems :: S2nTls IO -> S2N.Config -> ByteString -> [ByteString] -> ByteString -> IO ()
+loadCertPems :: S2nTls -> S2N.Config -> ByteString -> [ByteString] -> ByteString -> IO ()
 loadCertPems tls config certPem chainPems keyPem = do
   -- s2n expects the full chain in one PEM blob (cert + intermediates)
   let fullChain = BS.concat (certPem : chainPems)
@@ -328,7 +294,7 @@ loadCertPems tls config certPem chainPems keyPem = do
 
 -- | Create a TLS-wrapped Warp Connection from an accepted socket.
 makeTLSConnection ::
-  S2nTls IO ->
+  S2nTls ->
   S2N.Config ->
   Socket ->
   SockAddr ->
@@ -364,7 +330,7 @@ makeTLSConnection tls config clientSock clientAddr = do
 
 -- | Wrap an s2n Connection as a Warp Connection.
 wrapS2nConnection ::
-  S2nTls IO ->
+  S2nTls ->
   S2N.Connection ->
   Socket ->
   SockAddr ->
@@ -387,7 +353,7 @@ wrapS2nConnection tls conn clientSock clientAddr = do
       }
 
 -- | Receive data into a buffer over TLS.
-recvBufTLS :: S2nTls IO -> S2N.Connection -> WarpI.Buffer -> WarpI.BufSize -> IO Bool
+recvBufTLS :: S2nTls -> S2N.Connection -> WarpI.Buffer -> WarpI.BufSize -> IO Bool
 recvBufTLS tls conn buf bufSize = do
   bs <- tls.blockingRecv conn bufSize
   if BS.null bs
@@ -397,7 +363,7 @@ recvBufTLS tls conn buf bufSize = do
       pure True
 
 -- | Send a file over TLS by reading and sending chunks.
-sendFileTLS :: S2nTls IO -> S2N.Connection -> WarpI.FileId -> Integer -> Integer -> IO () -> [ByteString] -> IO ()
+sendFileTLS :: S2nTls -> S2N.Connection -> WarpI.FileId -> Integer -> Integer -> IO () -> [ByteString] -> IO ()
 sendFileTLS tls conn fileId offset len hook headers = do
   -- Send headers first
   mapM_ (tls.blockingSendAll conn) headers
@@ -410,7 +376,7 @@ sendFileTLS tls conn fileId offset len hook headers = do
   hook
 
 -- | Close a TLS connection properly.
-closeTLSConnection :: S2nTls IO -> S2N.Connection -> Socket -> IO ()
+closeTLSConnection :: S2nTls -> S2N.Connection -> Socket -> IO ()
 closeTLSConnection tls conn sock = do
   -- Attempt graceful TLS shutdown, ignore errors
   void (shutdownLoop tls conn) `catch` \(_ :: S2nError) -> pure ()

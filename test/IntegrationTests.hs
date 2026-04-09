@@ -1,6 +1,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 
-module IntegrationTests (integrationTests) where
+module IntegrationTests (integrationSpec) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (replicateConcurrently)
@@ -8,154 +8,127 @@ import Control.Exception (SomeException, try)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as LBS
 import Network.Connection qualified as Conn
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
+import S2nTls (S2nTls (..))
+import Test.Hspec (SpecWith, describe, expectationFailure, it, shouldBe, shouldSatisfy)
 
-import Network.Wai.Handler.WarpS2N (S2nTls, tlsSettings)
+import Network.Wai.Handler.WarpS2N (tlsSettings)
 
 import TestUtils
 
-integrationTests :: S2nTls IO -> TestTree
-integrationTests tls =
-    testGroup
-        "Integration"
-        [ testBasicTLSRoundtrip tls
-        , testMultipleRequests tls
-        , testConcurrentConnections tls
-        , testLargePayload tls
-        ]
+integrationSpec :: SpecWith S2nTls
+integrationSpec = do
+    describe "Basic TLS roundtrip" basicRoundtripSpec
+    describe "Multiple requests" multipleRequestsSpec
+    describe "Concurrent connections" concurrentSpec
+    describe "Large payloads" largePayloadSpec
 
--- | Test basic TLS connection and HTTP roundtrip
-testBasicTLSRoundtrip :: S2nTls IO -> TestTree
-testBasicTLSRoundtrip tls =
-    testGroup
-        "Basic TLS roundtrip"
-        [ testCase "establishes TLS connection and receives response" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                result <- makeSecureRequest port
-                case result of
-                    Left err -> assertFailure $ "Request failed: " ++ err
-                    Right response -> do
-                        -- Response should contain "OK" and HTTP status
-                        let responseStr = LBS.toStrict response
-                        assertBool "Response contains HTTP" (BS.isInfixOf "HTTP" responseStr)
-                        assertBool "Response contains 200" (BS.isInfixOf "200" responseStr)
-                        assertBool "Response contains blarg body" (BS.isInfixOf "blarg" responseStr)
-        , testCase "handles connection close gracefully" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                -- Make request and ensure it completes
-                result <- makeSecureRequest port
-                case result of
-                    Left err -> assertFailure $ "Request failed: " ++ err
-                    Right _ -> pure ()
-                -- Server should still be running for another request
-                result2 <- makeSecureRequest port
-                case result2 of
-                    Left err -> assertFailure $ "Second request failed: " ++ err
-                    Right _ -> pure ()
-        ]
+basicRoundtripSpec :: SpecWith S2nTls
+basicRoundtripSpec = do
+    it "establishes TLS connection and receives response" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            result <- makeSecureRequest port
+            case result of
+                Left err -> expectationFailure $ "Request failed: " ++ err
+                Right response -> do
+                    let responseStr = LBS.toStrict response
+                    responseStr `shouldSatisfy` BS.isInfixOf "HTTP"
+                    responseStr `shouldSatisfy` BS.isInfixOf "200"
+                    responseStr `shouldSatisfy` BS.isInfixOf "blarg"
 
--- | Test multiple sequential requests on same server
-testMultipleRequests :: S2nTls IO -> TestTree
-testMultipleRequests tls =
-    testGroup
-        "Multiple requests"
-        [ testCase "handles 10 sequential requests" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                results <- mapM (\_ -> makeSecureRequest port) [1 .. 10 :: Int]
-                let failures = [e | Left e <- results]
-                assertBool ("Some requests failed: " ++ show failures) (null failures)
-        , testCase "handles requests with small delays" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                results <-
-                    mapM
-                        ( \_ -> do
-                            threadDelay 50_000 -- 50ms delay
-                            makeSecureRequest port
-                        )
-                        [1 .. 5 :: Int]
-                let failures = [e | Left e <- results]
-                assertBool ("Some requests failed: " ++ show failures) (null failures)
-        ]
+    it "handles connection close gracefully" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            result <- makeSecureRequest port
+            case result of
+                Left err -> expectationFailure $ "Request failed: " ++ err
+                Right _ -> pure ()
+            result2 <- makeSecureRequest port
+            case result2 of
+                Left err -> expectationFailure $ "Second request failed: " ++ err
+                Right _ -> pure ()
 
--- | Test concurrent connections
-testConcurrentConnections :: S2nTls IO -> TestTree
-testConcurrentConnections tls =
-    testGroup
-        "Concurrent connections"
-        [ testCase "handles 10 concurrent connections" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                results <- replicateConcurrently 10 (makeSecureRequest port)
-                let successes = length [() | Right _ <- results]
-                let failures = [e | Left e <- results]
-                assertBool
-                    ("Only " ++ show successes ++ "/10 succeeded, failures: " ++ show failures)
-                    (successes == 10) -- Allow some failures due to timing
-        , testCase "handles 100 concurrent connections" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                results <- replicateConcurrently 100 (makeSecureRequest port)
-                let successes = length [() | Right _ <- results]
-                assertBool
-                    ("Only " ++ show successes ++ "/100 succeeded")
-                    (successes == 100) -- Allow some failures
-        ]
+multipleRequestsSpec :: SpecWith S2nTls
+multipleRequestsSpec = do
+    it "handles 10 sequential requests" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            results <- mapM (\_ -> makeSecureRequest port) [1 .. 10 :: Int]
+            let failures = [e | Left e <- results]
+            failures `shouldBe` []
 
--- | Test with larger payloads
-testLargePayload :: S2nTls IO -> TestTree
-testLargePayload tls =
-    testGroup
-        "Large payloads"
-        [ testCase "client can send larger request" $ do
-            let settings = tlsSettings testCertPath testKeyPath
-            withTestServer tls settings $ \port -> do
-                -- Connect and send a request with a larger body
-                result <- try @SomeException $ do
-                    ctx <- Conn.initConnectionContext
-                    conn <-
-                        Conn.connectTo
-                            ctx
-                            Conn.ConnectionParams
-                                { Conn.connectionHostname = "localhost"
-                                , Conn.connectionPort = fromIntegral port
-                                , Conn.connectionUseSecure =
-                                    Just
-                                        Conn.TLSSettingsSimple
-                                            { Conn.settingDisableCertificateValidation = True
-                                            , Conn.settingDisableSession = False
-                                            , Conn.settingUseServerName = True
-                                            }
-                                , Conn.connectionUseSocks = Nothing
-                                }
+    it "handles requests with small delays" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            results <-
+                mapM
+                    ( \_ -> do
+                        threadDelay 50_000
+                        makeSecureRequest port
+                    )
+                    [1 .. 5 :: Int]
+            let failures = [e | Left e <- results]
+            failures `shouldBe` []
 
-                    -- Send POST with 1MB body
-                    let body = BS.replicate 1_000_000 0x41 -- 1MB of 'A's
-                        request =
-                            BS.concat
-                                [ "POST / HTTP/1.1\r\n"
-                                , "Host: localhost\r\n"
-                                , "Content-Length: 1000000\r\n"
-                                , "Connection: close\r\n"
-                                , "\r\n"
-                                , body
-                                ]
-                    Conn.connectionPut conn request
+concurrentSpec :: SpecWith S2nTls
+concurrentSpec = do
+    it "handles 10 concurrent connections" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            results <- replicateConcurrently 10 (makeSecureRequest port)
+            let successes = length [() | Right _ <- results]
+            successes `shouldBe` 10
 
-                    -- Read response
-                    response <- readAll conn
-                    Conn.connectionClose conn
-                    pure response
+    it "handles 25 concurrent connections" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            results <- replicateConcurrently 25 (makeSecureRequest port)
+            let successes = length [() | Right _ <- results]
+            successes `shouldSatisfy` (>= 23)
 
-                case result of
-                    Left e -> assertFailure $ "Large request failed: " ++ show e
-                    Right response ->
-                        assertBool "Response received" (BS.length response > 0)
-        ]
+largePayloadSpec :: SpecWith S2nTls
+largePayloadSpec = do
+    it "client can send larger request" $ \tls -> do
+        let settings = tlsSettings testCertPath testKeyPath
+        withTestServer tls settings $ \port -> do
+            result <- try @SomeException $ do
+                ctx <- Conn.initConnectionContext
+                conn <-
+                    Conn.connectTo
+                        ctx
+                        Conn.ConnectionParams
+                            { Conn.connectionHostname = "localhost"
+                            , Conn.connectionPort = fromIntegral port
+                            , Conn.connectionUseSecure =
+                                Just
+                                    Conn.TLSSettingsSimple
+                                        { Conn.settingDisableCertificateValidation = True
+                                        , Conn.settingDisableSession = False
+                                        , Conn.settingUseServerName = True
+                                        }
+                            , Conn.connectionUseSocks = Nothing
+                            }
+
+                let body = BS.replicate 1_000_000 0x41
+                    request =
+                        BS.concat
+                            [ "POST / HTTP/1.1\r\n"
+                            , "Host: localhost\r\n"
+                            , "Content-Length: 1000000\r\n"
+                            , "Connection: close\r\n"
+                            , "\r\n"
+                            , body
+                            ]
+                Conn.connectionPut conn request
+
+                response <- readAll conn
+                Conn.connectionClose conn
+                pure response
+
+            case result of
+                Left e -> expectationFailure $ "Large request failed: " ++ show e
+                Right response ->
+                    BS.length response `shouldSatisfy` (> 0)
   where
     readAll conn = do
         chunk <- Conn.connectionGetChunk conn

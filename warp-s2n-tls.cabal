@@ -28,7 +28,6 @@ library
                       , warp >= 3.3 && < 4
                       , wai >= 3.2 && < 4
                       , s2n-tls
-                      , s2n-tls-sys
                       , bytestring
                       , network >= 3.0
                       , streaming-commons
@@ -41,6 +40,7 @@ test-suite warp-s2n-tls-test
     type:               exitcode-stdio-1.0
     main-is:            Main.hs
     other-modules:      TestUtils
+                      , AppMonadTests
                       , CertLoadingTests
                       , IntegrationTests
                       , ProtocolTests
@@ -49,8 +49,7 @@ test-suite warp-s2n-tls-test
                       , warp
                       , wai
                       , s2n-tls
-                      , tasty
-                      , tasty-hunit
+                      , hspec
                       , bytestring
                       , network
                       , http-types
@@ -60,6 +59,7 @@ test-suite warp-s2n-tls-test
                       , data-default-class
                       , connection
                       , unliftio
+                      , mtl
     hs-source-dirs:     test
     default-language:   GHC2021
     default-extensions: OverloadedStrings

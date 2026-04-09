@@ -23,7 +23,7 @@ import Network.Wai.Handler.Warp (defaultSettings, setPort)
 import Network.Wai (Application)
 
 main :: IO ()
-main = withS2n $ \tls -> do
+main = withS2nTls Linked $ \tls -> do
     let tlsSet = tlsSettings "cert.pem" "key.pem"
         warpSet = setPort 443 defaultSettings
     runTLS tls tlsSet warpSet myApp
@@ -38,7 +38,7 @@ myApp = ...
 import qualified Data.ByteString as BS
 
 main :: IO ()
-main = withS2n $ \tls -> do
+main = withS2nTls Linked $ \tls -> do
     cert <- BS.readFile "cert.pem"
     key <- BS.readFile "key.pem"
     let tlsSet = tlsSettingsMemory cert key
@@ -63,7 +63,7 @@ The s2n handle can be shared across multiple servers:
 import Control.Concurrent.Async (concurrently_)
 
 main :: IO ()
-main = withS2n $ \tls -> do
+main = withS2nTls Linked $ \tls -> do
     let tlsSet1 = tlsSettings "cert1.pem" "key1.pem"
         tlsSet2 = tlsSettings "cert2.pem" "key2.pem"
     concurrently_
@@ -77,7 +77,7 @@ To load libs2n.so at runtime instead of linking:
 
 ```haskell
 main :: IO ()
-main = withS2nDynamic "/usr/local/lib/libs2n.so" $ \tls -> do
+main = withS2nTls (Dynamic "/usr/local/lib/libs2n.so") $ \tls -> do
     runTLS tls tlsSet warpSet myApp
 ```
 
@@ -104,6 +104,17 @@ Common s2n cipher policies:
 - `"20170210"` - Specific dated policy
 
 See s2n-tls documentation for the full list.
+
+## Development
+
+### Running tests
+
+Tests require the `S2N_DONT_MLOCK=1` environment variable to avoid lockable memory
+exhaustion issues:
+
+```bash
+S2N_DONT_MLOCK=1 cabal test
+```
 
 ## Known Limitations
 

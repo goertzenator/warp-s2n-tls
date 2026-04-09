@@ -1,6 +1,6 @@
 {-# LANGUAGE NumericUnderscores #-}
 
-module ProtocolTests (protocolTests) where
+module ProtocolTests (protocolSpec) where
 
 import Control.Applicative
 import Control.Exception (SomeException, bracket, try)
@@ -13,104 +13,84 @@ import Network.TLS.Extra.Cipher qualified as TLS
 import Network.Wai (responseLBS)
 import Network.Wai.Handler.Warp (defaultSettings, setBeforeMainLoop)
 import Network.Wai.Handler.WarpS2N (
-    S2nTls,
     TLSSettings (..),
     runTLSSocket,
     tlsSettings,
  )
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
+import S2nTls (S2nTls (..))
+import Test.Hspec (SpecWith, describe, expectationFailure, it, shouldBe)
 import TestUtils
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import UnliftIO.STM
 
-protocolTests :: S2nTls IO -> TestTree
-protocolTests tls =
-    testGroup
-        "Protocol"
-        [ testTLSVersionNegotiation tls
-        , testCipherPreferences tls
-        ]
+protocolSpec :: SpecWith S2nTls
+protocolSpec = do
+    describe "TLS version negotiation" versionNegotiationSpec
+    describe "Cipher preferences" cipherPreferencesSpec
 
--- | Test TLS version negotiation
-testTLSVersionNegotiation :: S2nTls IO -> TestTree
-testTLSVersionNegotiation tls =
-    testGroup
-        "TLS version negotiation"
-        [ testCase "negotiates TLS 1.3 with default settings" $ do
-            let serverSettings = tlsSettings testCertPath testKeyPath
-            negotiatedVersion <- withTestServerGetVersion tls serverSettings [TLS.TLS13, TLS.TLS12]
-            case negotiatedVersion of
-                Just TLS.TLS13 -> pure ()
-                Just v -> assertFailure $ "Expected TLS 1.3, got " ++ show v
-                Nothing -> assertFailure "Failed to get negotiated version"
-        , testCase "negotiates TLS 1.2 when client only supports TLS 1.2" $ do
-            -- Use a cipher policy that supports TLS 1.2
-            let serverSettings =
-                    (tlsSettings testCertPath testKeyPath)
-                        { tlsCipherPreferences = "default" -- supports TLS 1.2
-                        }
-            negotiatedVersion <- withTestServerGetVersion tls serverSettings [TLS.TLS12]
-            case negotiatedVersion of
-                Just TLS.TLS12 -> pure ()
-                Just v -> assertFailure $ "Expected TLS 1.2, got " ++ show v
-                Nothing -> assertFailure "Failed to get negotiated version"
-        , testCase "fails when no common TLS version" $ do
-            -- Server only supports TLS 1.3, client only TLS 1.0
-            let serverSettings =
-                    (tlsSettings testCertPath testKeyPath)
-                        { tlsCipherPreferences = "default_tls13"
-                        }
-            result <-
-                try @SomeException $
-                    withTestServerGetVersion tls serverSettings [TLS.TLS10]
-            case result of
-                Left _ -> pure () -- Expected to fail
-                Right (Just v) -> assertFailure $ "Should have failed but got " ++ show v
-                Right Nothing -> pure () -- Connection failed as expected
-        ]
+versionNegotiationSpec :: SpecWith S2nTls
+versionNegotiationSpec = do
+    it "negotiates TLS 1.3 with default settings" $ \tls -> do
+        let serverSettings = tlsSettings testCertPath testKeyPath
+        negotiatedVersion <- withTestServerGetVersion tls serverSettings [TLS.TLS13, TLS.TLS12]
+        case negotiatedVersion of
+            Just TLS.TLS13 -> pure ()
+            Just v -> expectationFailure $ "Expected TLS 1.3, got " ++ show v
+            Nothing -> expectationFailure "Failed to get negotiated version"
 
--- | Test cipher preference configurations
-testCipherPreferences :: S2nTls IO -> TestTree
-testCipherPreferences tls =
-    testGroup
-        "Cipher preferences"
-        [ testCase "accepts connection with default_tls13 policy" $ do
-            let serverSettings =
-                    (tlsSettings testCertPath testKeyPath)
-                        { tlsCipherPreferences = "default_tls13"
-                        }
-            result <- withTestServerConnect tls serverSettings
-            assertBool "Connection should succeed" result
-        , testCase "accepts connection with default policy" $ do
-            let serverSettings =
-                    (tlsSettings testCertPath testKeyPath)
-                        { tlsCipherPreferences = "default"
-                        }
-            result <- withTestServerConnect tls serverSettings
-            assertBool "Connection should succeed" result
+    it "negotiates TLS 1.2 when client only supports TLS 1.2" $ \tls -> do
+        let serverSettings =
+                (tlsSettings testCertPath testKeyPath)
+                    { tlsCipherPreferences = "default"
+                    }
+        negotiatedVersion <- withTestServerGetVersion tls serverSettings [TLS.TLS12]
+        case negotiatedVersion of
+            Just TLS.TLS12 -> pure ()
+            Just v -> expectationFailure $ "Expected TLS 1.2, got " ++ show v
+            Nothing -> expectationFailure "Failed to get negotiated version"
 
-            -- Note: Testing specific cipher selection would require more complex setup
-            -- to query the negotiated cipher from both sides
-        ]
+    it "fails when no common TLS version" $ \tls -> do
+        let serverSettings =
+                (tlsSettings testCertPath testKeyPath)
+                    { tlsCipherPreferences = "default_tls13"
+                    }
+        result <-
+            try @SomeException $
+                withTestServerGetVersion tls serverSettings [TLS.TLS10]
+        case result of
+            Left _ -> pure ()
+            Right (Just v) -> expectationFailure $ "Should have failed but got " ++ show v
+            Right Nothing -> pure ()
+
+cipherPreferencesSpec :: SpecWith S2nTls
+cipherPreferencesSpec = do
+    it "accepts connection with default_tls13 policy" $ \tls -> do
+        let serverSettings =
+                (tlsSettings testCertPath testKeyPath)
+                    { tlsCipherPreferences = "default_tls13"
+                    }
+        result <- withTestServerConnect tls serverSettings
+        result `shouldBe` True
+
+    it "accepts connection with default policy" $ \tls -> do
+        let serverSettings =
+                (tlsSettings testCertPath testKeyPath)
+                    { tlsCipherPreferences = "default"
+                    }
+        result <- withTestServerConnect tls serverSettings
+        result `shouldBe` True
 
 -- | Helper: Start server and get negotiated TLS version from client perspective
-withTestServerGetVersion :: S2nTls IO -> TLSSettings -> [TLS.Version] -> IO (Maybe TLS.Version)
+withTestServerGetVersion :: S2nTls -> TLSSettings -> [TLS.Version] -> IO (Maybe TLS.Version)
 withTestServerGetVersion tls tlsSet clientVersions =
     bracket bindFreePort (Socket.close . fst) $ \(sock, port) -> do
         serverReady <- newEmptyTMVarIO
-
         let app _ respond = respond $ responseLBS status200 [] "blarg!"
             warpSet = setBeforeMainLoop (atomically $ putTMVar serverReady ()) defaultSettings
-
         withAsync (runTLSSocket tls tlsSet warpSet sock app) $ \as -> do
             atomically $ waitSTM as <|> takeTMVar serverReady
-
-            -- atomically $ takeTMVar serverReady
             threadDelay 10_000
-
-            -- Connect with TLS client and capture negotiated version
             backend <- makeClientSocket port
             params <- makeClientParams clientVersions
             ctx <- TLS.contextNew backend params
@@ -121,7 +101,7 @@ withTestServerGetVersion tls tlsSet clientVersions =
             pure version
 
 -- | Helper: Start server and test if connection succeeds
-withTestServerConnect :: S2nTls IO -> TLSSettings -> IO Bool
+withTestServerConnect :: S2nTls -> TLSSettings -> IO Bool
 withTestServerConnect tls tlsSet =
     bracket bindFreePort (Socket.close . fst) $ \(sock, port) -> do
         serverReady <- newEmptyTMVarIO
@@ -159,7 +139,7 @@ makeClientParams versions = do
             , TLS.clientShared = def
             , TLS.clientHooks =
                 def
-                    { TLS.onServerCertificate = \_ _ _ _ -> pure [] -- Skip validation for self-signed
+                    { TLS.onServerCertificate = \_ _ _ _ -> pure []
                     }
             }
 

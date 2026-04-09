@@ -49,7 +49,7 @@ echoApp :: Application
 echoApp _req respond = respond $ responseLBS status200 [] "blarg!"
 
 -- | Run a test server and execute an action with its port.
-withTestServer :: S2nTls IO -> TLSSettings -> (Port -> IO a) -> IO a
+withTestServer :: S2nTls -> TLSSettings -> (Port -> IO a) -> IO a
 withTestServer tls tlsSet action = do
     -- Create and bind socket
     sock <- socket AF_INET Stream defaultProtocol
