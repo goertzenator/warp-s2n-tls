@@ -1,3 +1,4 @@
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -59,8 +60,9 @@ module Network.Wai.Handler.WarpS2N (
   tlsSettingsMemory,
   tlsSettingsChainMemory,
 
-  -- * Session Management
-  SessionManager (..),
+  -- * Session Tickets
+  TicketKeyOps (..),
+  basicTicketKeyManager,
 
   -- * Re-exports from s2n-tls
   CertAuthType (CertAuthType),
@@ -69,6 +71,8 @@ module Network.Wai.Handler.WarpS2N (
   pattern CertAuthRequired,
 ) where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (withAsync)
 import Control.Exception (bracket, catch, onException)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
@@ -76,6 +80,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (IORef, newIORef, readIORef)
 import Data.Streaming.Network (bindPortTCP)
+import Data.Word
 import Network.Socket (SockAddr, Socket)
 import Network.Socket qualified as Socket
 import Network.Wai (Application)
@@ -84,6 +89,7 @@ import Network.Wai.Handler.Warp qualified as Warp
 import Network.Wai.Handler.Warp.Internal qualified as WarpI
 import S2nTls
 import S2nTls qualified as S2N
+import System.Entropy (getEntropy)
 import System.IO (IOMode (..), SeekMode (..), hSeek, withBinaryFile)
 
 --------------------------------------------------------------------------------
@@ -102,17 +108,36 @@ data CertSettings
     -- @CertFromRef certRef chainRefs keyRef@
     CertFromRef !(IORef ByteString) ![IORef ByteString] !(IORef ByteString)
 
-{- | Session manager for TLS session resumption.
-Implement these callbacks to enable session caching.
+{- | Operations available to a ticket key manager.
+
+This record provides an abstraction over the underlying TLS library,
+allowing key managers to configure ticket encryption without depending
+on s2n-tls internals.
 -}
-data SessionManager = SessionManager
-  { smStore :: ByteString -> ByteString -> IO ()
-  -- ^ Store a session. Arguments: session ID, session data.
-  , smRetrieve :: ByteString -> IO (Maybe ByteString)
-  -- ^ Retrieve a session by ID. Return 'Nothing' if not found.
-  , smDelete :: ByteString -> IO ()
-  -- ^ Delete a session by ID.
+data TicketKeyOps = TicketKeyOps
+  { setEncryptLifetime :: Word64 -> IO ()
+  -- ^ Set the lifetime (in seconds) for which a key can encrypt new tickets.
+  -- After this time, the key will only be used for decryption.
+  , setDecryptLifetime :: Word64 -> IO ()
+  -- ^ Set the lifetime (in seconds) for which a key can decrypt tickets
+  -- after it can no longer encrypt. Total key validity is encrypt + decrypt lifetime.
+  , addTicketKey :: ByteString -> ByteString -> IO ()
+  -- ^ Add a ticket encryption key. Arguments: key name (unique identifier),
+  -- key data (should be 32 bytes of cryptographically random data).
+  -- The key becomes valid immediately.
   }
+
+{- | Ticket key manager callback type.
+
+The callback receives 'TicketKeyOps' and should:
+
+1. Set up initial ticket encryption keys (runs before server accepts connections)
+2. Return an action to be run in an async that rotates keys over time
+
+The separation allows initialization to complete before the server starts
+accepting connections, while key rotation continues in the background.
+-}
+type TicketKeyManager = TicketKeyOps -> IO (IO ())
 
 -- | TLS settings for the server.
 data TLSSettings = TLSSettings
@@ -123,8 +148,9 @@ data TLSSettings = TLSSettings
   -- See s2n documentation for available policies.
   , tlsWantClientCert :: !CertAuthType
   -- ^ Client certificate authentication type.
-  , tlsSessionManager :: !(Maybe SessionManager)
-  -- ^ Optional session manager for session resumption.
+  , tlsTicketKeyManager :: !(Maybe TicketKeyManager)
+  -- ^ Optional ticket key manager for session resumption via tickets.
+  -- When present, session tickets are automatically enabled.
   }
 
 {- | Default TLS settings.
@@ -132,7 +158,7 @@ data TLSSettings = TLSSettings
 * Loads certificate from @certificate.pem@ and key from @key.pem@
 * Uses @default_tls13@ cipher policy
 * No client certificate authentication
-* No session management
+* Uses 'basicTicketKeyManager' for session ticket support
 -}
 defaultTlsSettings :: TLSSettings
 defaultTlsSettings =
@@ -140,7 +166,7 @@ defaultTlsSettings =
     { tlsCertSettings = CertFromFile "certificate.pem" [] "key.pem"
     , tlsCipherPreferences = "default_tls13"
     , tlsWantClientCert = CertAuthNone
-    , tlsSessionManager = Nothing
+    , tlsTicketKeyManager = Just basicTicketKeyManager
     }
 
 --------------------------------------------------------------------------------
@@ -200,6 +226,57 @@ tlsSettingsChainMemory cert chain key =
     }
 
 --------------------------------------------------------------------------------
+-- Session Tickets
+--------------------------------------------------------------------------------
+
+{- | Basic ticket key manager with automatic key rotation.
+
+This manager:
+
+* Sets encrypt+decrypt key lifetime to 2 hours
+* Sets decrypt-only key lifetime to 13 hours (total key validity of 15 hours)
+* Installs an initial key immediately
+* Rotates in a new key every 1 hour 59 minutes
+
+The key rotation schedule ensures that:
+
+* New tickets are always encrypted with a key that won't expire for 2 hours
+* Old tickets remain valid for decryption during the overlap period
+* Gradual key rollover provides seamless session resumption
+
+This is a good default for most server deployments.
+-}
+basicTicketKeyManager :: TicketKeyOps -> IO (IO ())
+basicTicketKeyManager ops = do
+  -- Set key lifetimes
+  ops.setEncryptLifetime encryptLifetimeSecs
+  ops.setDecryptLifetime decryptLifetimeSecs
+  -- Install initial key
+  installKey 0
+  -- Return the rotation action
+  pure $ rotateKeys 1
+ where
+  encryptLifetimeSecs, decryptLifetimeSecs :: Word64
+  encryptLifetimeSecs = 2 * 60 * 60 -- 2 hours
+  decryptLifetimeSecs = 13 * 60 * 60 -- 13 hours (decrypt-only after encrypt expires)
+  rotateIntervalMicros :: Int
+  rotateIntervalMicros = (1 * 60 + 59) * 60 * 1_000_000 -- 1:59 in microseconds
+  installKey :: Word64 -> IO ()
+  installKey counter = do
+    -- Generate key name from counter
+    let keyName = BS8.pack $ "key" <> show counter
+    -- Generate 32 bytes of random key material
+    keyData <- getEntropy 32
+    -- Add the key
+    ops.addTicketKey keyName keyData
+
+  rotateKeys :: Word64 -> IO ()
+  rotateKeys counter = do
+    threadDelay rotateIntervalMicros
+    installKey counter
+    rotateKeys (counter + 1)
+
+--------------------------------------------------------------------------------
 -- Running TLS
 --------------------------------------------------------------------------------
 
@@ -227,11 +304,30 @@ such as for Unix domain sockets or when using socket activation.
 The 'S2nTls' handle must be obtained via 'withS2n' or 'withS2nDynamic'.
 -}
 runTLSSocket :: S2nTls -> TLSSettings -> Settings -> Socket -> Application -> IO ()
-runTLSSocket tls tlsSet settings sock app = do
+runTLSSocket tls tlsSet@TLSSettings{..} settings sock app = do
   -- Initialize s2n config
   config <- initS2nConfig tls tlsSet
-  -- Run Warp with our connection maker
-  WarpI.runSettingsConnectionMakerSecure settings (getter tls config) app
+
+  -- Set up ticket key manager if configured, then run the server
+  rotateAction <- case tlsTicketKeyManager of
+    Nothing -> pure (pure ()) -- dummy rotation action
+    Just keyManager -> do
+      -- Turn on session tickets in config since we have a key manager
+      tls.setSessionTicketsOnOff config True
+      -- Create TicketKeyOps for the key manager
+      let ops =
+            TicketKeyOps
+              { setEncryptLifetime = tls.setTicketEncryptDecryptKeyLifetime config
+              , setDecryptLifetime = tls.setTicketDecryptKeyLifetime config
+              , addTicketKey = \keyName keyData ->
+                  tls.addTicketCryptoKey config keyName keyData Nothing
+              }
+      -- Call the key manager to set up initial keys and get rotation action
+      keyManager ops
+
+  -- Run server with key rotation in background
+  withAsync rotateAction $ \_ ->
+    WarpI.runSettingsConnectionMakerSecure settings (getter tls config) app
  where
   getter :: S2nTls -> S2N.Config -> IO (IO (WarpI.Connection, WarpI.Transport), SockAddr)
   getter tls' config = do
@@ -258,9 +354,6 @@ initS2nConfig tls TLSSettings{..} = do
 
   -- Load certificates
   loadCertSettings tls config tlsCertSettings
-
-  -- TODO: Session manager callbacks would be set here via low-level FFI
-  -- s2n requires s2n_config_set_cache_store_callback, etc.
 
   pure config
 
@@ -402,4 +495,4 @@ tlsVersionToMajorMinor v = case v of
 
 -- | Allocate a write buffer for Warp Connection.
 allocateWriteBuffer :: IO (IORef WarpI.WriteBuffer)
-allocateWriteBuffer = WarpI.createWriteBuffer 16384 >>= newIORef
+allocateWriteBuffer = WarpI.createWriteBuffer 16_384 >>= newIORef

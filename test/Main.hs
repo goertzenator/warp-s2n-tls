@@ -8,6 +8,7 @@ import AppMonadTests (appMonadSpec)
 import CertLoadingTests (certLoadingSpec)
 import IntegrationTests (integrationSpec)
 import ProtocolTests (protocolSpec)
+import SessionTicketTests (sessionTicketSpec)
 
 main :: IO ()
 main = hspec $ do
@@ -16,3 +17,4 @@ main = hspec $ do
         describe "Integration" integrationSpec
         describe "Protocol" protocolSpec
         describe "AppMonad ergonomics" appMonadSpec
+        sessionTicketSpec

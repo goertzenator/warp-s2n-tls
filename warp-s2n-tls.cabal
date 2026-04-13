@@ -28,7 +28,9 @@ library
                       , warp >= 3.3 && < 4
                       , wai >= 3.2 && < 4
                       , s2n-tls
+                      , async
                       , bytestring
+                      , entropy
                       , network >= 3.0
                       , streaming-commons
     hs-source-dirs:     src
@@ -44,6 +46,7 @@ test-suite warp-s2n-tls-test
                       , CertLoadingTests
                       , IntegrationTests
                       , ProtocolTests
+                      , SessionTicketTests
     build-depends:      base >= 4.16 && < 5
                       , warp-s2n-tls
                       , warp
