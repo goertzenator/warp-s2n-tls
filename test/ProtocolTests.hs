@@ -14,7 +14,7 @@ import Network.Wai (responseLBS)
 import Network.Wai.Handler.Warp (defaultSettings, setBeforeMainLoop)
 import Network.Wai.Handler.WarpS2N (
     TLSSettings (..),
-    runTLSSocket,
+    runTLSSocketLib,
     tlsSettings,
  )
 import S2nTls (S2nTls (..))
@@ -88,7 +88,7 @@ withTestServerGetVersion tls tlsSet clientVersions =
         serverReady <- newEmptyTMVarIO
         let app _ respond = respond $ responseLBS status200 [] "blarg!"
             warpSet = setBeforeMainLoop (atomically $ putTMVar serverReady ()) defaultSettings
-        withAsync (runTLSSocket tls tlsSet warpSet sock app) $ \as -> do
+        withAsync (runTLSSocketLib tls tlsSet warpSet sock app) $ \as -> do
             atomically $ waitSTM as <|> takeTMVar serverReady
             threadDelay 10_000
             backend <- makeClientSocket port
@@ -109,7 +109,7 @@ withTestServerConnect tls tlsSet =
         let app _ respond = respond $ responseLBS status200 [] "blarg!"
             warpSet = setBeforeMainLoop (atomically $ putTMVar serverReady ()) defaultSettings
 
-        withAsync (runTLSSocket tls tlsSet warpSet sock app) $ \as -> do
+        withAsync (runTLSSocketLib tls tlsSet warpSet sock app) $ \as -> do
             atomically $ waitSTM as <|> takeTMVar serverReady
             threadDelay 10_000
 

@@ -24,23 +24,25 @@ import Network.Wai.Handler.WarpS2N
 import Network.Wai.Handler.Warp (defaultSettings, setPort)
 
 main :: IO ()
-main = withS2nTls Linked $ \\tls -> do
+main = do
     let tlsSet = tlsSettings "cert.pem" "key.pem"
         warpSet = setPort 443 defaultSettings
-    runTLS tls tlsSet warpSet myApp
+    runTLS tlsSet warpSet myApp
 @
 
-For dynamic library loading:
+For dynamic library loading or sharing the s2n handle across servers:
 
 @
 main = withS2nTls (Dynamic "/path/to/libs2n.so") $ \\tls -> do
-    runTLS tls tlsSet warpSet myApp
+    runTLSLib tls tlsSet warpSet myApp
 @
 -}
 module Network.Wai.Handler.WarpS2N (
   -- * Running TLS
   runTLS,
   runTLSSocket,
+  runTLSLib,
+  runTLSSocketLib,
 
   -- * s2n Initialization (re-exported from s2n-tls)
   withS2nTls,
@@ -282,29 +284,64 @@ basicTicketKeyManager ops = do
 
 {- | Run a Warp server with TLS support.
 
-This binds to the port specified in 'Settings' (default 3000) and
-handles TLS connections using s2n-tls.
+This is the simplest way to run a TLS server. It initializes the s2n-tls
+library, binds to the port specified in 'Settings' (default 3000), and
+handles TLS connections.
 
-The 'S2nTls' handle must be obtained via 'withS2n' or 'withS2nDynamic'.
+@
+import Network.Wai.Handler.WarpS2N
+import Network.Wai.Handler.Warp (defaultSettings, setPort)
+
+main :: IO ()
+main = do
+    let tlsSet = tlsSettings "cert.pem" "key.pem"
+        warpSet = setPort 443 defaultSettings
+    runTLS tlsSet warpSet myApp
+@
 -}
-runTLS :: S2nTls -> TLSSettings -> Settings -> Application -> IO ()
-runTLS tls tlsSet settings app = do
-  let host = Warp.getHost settings
-      port = Warp.getPort settings
-  bracket
-    (bindPortTCP port host)
-    Socket.close
-    (\sock -> runTLSSocket tls tlsSet settings sock app)
+runTLS :: TLSSettings -> Settings -> Application -> IO ()
+runTLS tlsSet settings app =
+  withS2nTls Linked $ \tls ->
+    runTLSLib tls tlsSet settings app
 
 {- | Run a Warp server with TLS support on an existing socket.
 
 This is useful when you need more control over socket creation,
 such as for Unix domain sockets or when using socket activation.
-
-The 'S2nTls' handle must be obtained via 'withS2n' or 'withS2nDynamic'.
+Initializes s2n-tls automatically.
 -}
-runTLSSocket :: S2nTls -> TLSSettings -> Settings -> Socket -> Application -> IO ()
-runTLSSocket tls tlsSet@TLSSettings{..} settings sock app = do
+runTLSSocket :: TLSSettings -> Settings -> Socket -> Application -> IO ()
+runTLSSocket tlsSet settings sock app =
+  withS2nTls Linked $ \tls ->
+    runTLSSocketLib tls tlsSet settings sock app
+
+{- | Run a Warp server with TLS support, using an existing 'S2nTls' handle.
+
+This binds to the port specified in 'Settings' (default 3000) and
+handles TLS connections using s2n-tls.
+
+Use this when you need to share the 'S2nTls' handle across multiple
+servers or when using dynamic library loading.
+-}
+runTLSLib :: S2nTls -> TLSSettings -> Settings -> Application -> IO ()
+runTLSLib tls tlsSet settings app = do
+  let host = Warp.getHost settings
+      port = Warp.getPort settings
+  bracket
+    (bindPortTCP port host)
+    Socket.close
+    (\sock -> runTLSSocketLib tls tlsSet settings sock app)
+
+{- | Run a Warp server with TLS support on an existing socket, using an existing 'S2nTls' handle.
+
+This is useful when you need more control over socket creation,
+such as for Unix domain sockets or when using socket activation.
+
+Use this when you need to share the 'S2nTls' handle across multiple
+servers or when using dynamic library loading.
+-}
+runTLSSocketLib :: S2nTls -> TLSSettings -> Settings -> Socket -> Application -> IO ()
+runTLSSocketLib tls tlsSet@TLSSettings{..} settings sock app = do
   -- Initialize s2n config
   config <- initS2nConfig tls tlsSet
 

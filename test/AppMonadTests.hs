@@ -13,7 +13,7 @@ import S2nTls (S2nTls (..))
 import Test.Hspec (SpecWith, it)
 import UnliftIO (MonadIO (..), withRunInIO)
 
-import Network.Wai.Handler.WarpS2N (runTLS, tlsSettings)
+import Network.Wai.Handler.WarpS2N (runTLSLib, tlsSettings)
 
 import TestUtils (testCertPath, testKeyPath)
 
@@ -47,7 +47,7 @@ runBriefServer = do
     liftIO $
         race_
             (threadDelay 2_000_000)
-            (runTLS (envTls env) tlsSet defaultSettings app)
+            (runTLSLib (envTls env) tlsSet defaultSettings app)
 
     liftIO $ putStrLn "Server stopped"
 

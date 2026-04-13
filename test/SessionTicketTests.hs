@@ -10,7 +10,7 @@ import Network.HTTP.Types (status200)
 import Network.Socket qualified as Net
 import Network.Wai (Application, responseLBS)
 import Network.Wai.Handler.Warp (defaultSettings, setBeforeMainLoop)
-import Network.Wai.Handler.WarpS2N (S2nTls, runTLSSocket, tlsSettings)
+import Network.Wai.Handler.WarpS2N (S2nTls, runTLSSocketLib, tlsSettings)
 import S2nTls qualified
 import Test.Hspec
 import TestUtils (testCertPath, testKeyPath)
@@ -38,7 +38,7 @@ withTicketTestServer tls action = do
         tlsSet = tlsSettings testCertPath testKeyPath
 
     -- Run server in background
-    withAsync (runTLSSocket tls tlsSet warpSet sock echoApp) $ \as -> do
+    withAsync (runTLSSocketLib tls tlsSet warpSet sock echoApp) $ \as -> do
         startupResult <-
             atomically $
                 (Left <$> waitCatchSTM as)

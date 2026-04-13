@@ -23,7 +23,7 @@ import Network.HTTP.Types (status200)
 import Network.Socket
 import Network.Wai (Application, responseLBS)
 import Network.Wai.Handler.Warp (Port, defaultSettings, setBeforeMainLoop)
-import Network.Wai.Handler.WarpS2N (S2nTls, TLSSettings, runTLSSocket)
+import Network.Wai.Handler.WarpS2N (S2nTls, TLSSettings, runTLSSocketLib)
 import UnliftIO.Async
 import UnliftIO.Concurrent
 import UnliftIO.STM
@@ -62,7 +62,7 @@ withTestServer tls tlsSet action = do
     let warpSet = setBeforeMainLoop (atomically $ putTMVar serverReady ()) defaultSettings
 
     -- Run server in background, execute action, then cleanup
-    withAsync (runTLSSocket tls tlsSet warpSet sock echoApp) $ \as -> do
+    withAsync (runTLSSocketLib tls tlsSet warpSet sock echoApp) $ \as -> do
         startupResult <-
             atomically $
                 (Left <$> waitCatchSTM as)
