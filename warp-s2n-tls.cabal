@@ -6,11 +6,11 @@ description:
     This package provides TLS support for the Warp web server using
     the s2n-tls library, an alternative to the warp-tls package.
 
-license:            BSD-3-Clause
+license:            Apache-2.0
 license-file:       LICENSE
-author:             Your Name
-maintainer:         your.email@example.com
-copyright:          2026 Your Name
+author:             Daniel Goertzen
+maintainer:         daniel.goertzen@gmail.com
+copyright:          2026 Daniel Goertzen
 category:           Web
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
@@ -33,6 +33,7 @@ library
                       , entropy
                       , network >= 3.0
                       , streaming-commons
+                      , unbounded-delays
     hs-source-dirs:     src
     default-language:   GHC2021
     default-extensions: OverloadedRecordDot

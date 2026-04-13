@@ -6,11 +6,11 @@
 
 {- |
 Module      : Network.Wai.Handler.WarpS2N
-Copyright   : (c) 2026
-License     : BSD-3-Clause
-Maintainer  : your.email@example.com
+Copyright   : (c) 2026 Daniel Goertzen
+License     : Apache-2.0
+Maintainer  : daniel.goertzen@gmail.com
 Stability   : experimental
-Portability : non-portable
+Portability : non-portable (requires s2n-tls C library)
 
 TLS support for Warp via s2n-tls.
 
@@ -30,10 +30,12 @@ main = do
     runTLS tlsSet warpSet myApp
 @
 
-For dynamic library loading or sharing the s2n handle across servers:
+For dynamic library loading (ie, to pick FIPS or non-FIPS at runtime):
 
 @
 main = withS2nTls (Dynamic "/path/to/libs2n.so") $ \\tls -> do
+    let tlsSet = tlsSettings "cert.pem" "key.pem"
+        warpSet = setPort 443 defaultSettings
     runTLSLib tls tlsSet warpSet myApp
 @
 -}
@@ -73,14 +75,14 @@ module Network.Wai.Handler.WarpS2N (
   pattern CertAuthRequired,
 ) where
 
-import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (withAsync)
+import Control.Concurrent.Thread.Delay (delay)
 import Control.Exception (bracket, catch, onException)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
-import Data.IORef (IORef, newIORef, readIORef)
+import Data.IORef (IORef, newIORef)
 import Data.Streaming.Network (bindPortTCP)
 import Data.Word
 import Network.Socket (SockAddr, Socket)
@@ -106,9 +108,6 @@ data CertSettings
   | -- | Use in-memory PEM ByteStrings.
     -- @CertFromMemory certPem chainPems keyPem@
     CertFromMemory !ByteString ![ByteString] !ByteString
-  | -- | Dynamic certificates via IORefs for runtime updates/rotation.
-    -- @CertFromRef certRef chainRefs keyRef@
-    CertFromRef !(IORef ByteString) ![IORef ByteString] !(IORef ByteString)
 
 {- | Operations available to a ticket key manager.
 
@@ -117,12 +116,12 @@ allowing key managers to configure ticket encryption without depending
 on s2n-tls internals.
 -}
 data TicketKeyOps = TicketKeyOps
-  { setEncryptLifetime :: Word64 -> IO ()
-  -- ^ Set the lifetime (in seconds) for which a key can encrypt new tickets.
+  { setEncryptDecryptLifetime :: Word64 -> IO ()
+  -- ^ Set the lifetime (in seconds) for which a key can both encrypt and decrypt tickets.
   -- After this time, the key will only be used for decryption.
   , setDecryptLifetime :: Word64 -> IO ()
   -- ^ Set the lifetime (in seconds) for which a key can decrypt tickets
-  -- after it can no longer encrypt. Total key validity is encrypt + decrypt lifetime.
+  -- after it can no longer encrypt. Total key validity is encrypt/decrypt + decrypt lifetime.
   , addTicketKey :: ByteString -> ByteString -> IO ()
   -- ^ Add a ticket encryption key. Arguments: key name (unique identifier),
   -- key data (should be 32 bytes of cryptographically random data).
@@ -139,7 +138,6 @@ The callback receives 'TicketKeyOps' and should:
 The separation allows initialization to complete before the server starts
 accepting connections, while key rotation continues in the background.
 -}
-type TicketKeyManager = TicketKeyOps -> IO (IO ())
 
 -- | TLS settings for the server.
 data TLSSettings = TLSSettings
@@ -150,9 +148,9 @@ data TLSSettings = TLSSettings
   -- See s2n documentation for available policies.
   , tlsWantClientCert :: !CertAuthType
   -- ^ Client certificate authentication type.
-  , tlsTicketKeyManager :: !(Maybe TicketKeyManager)
+  , tlsTicketKeyManager :: !(Maybe (TicketKeyOps -> IO (IO ())))
   -- ^ Optional ticket key manager for session resumption via tickets.
-  -- When present, session tickets are automatically enabled.
+  -- This callback registers an initial ticket key and returns a forever running action that adds new keys over time.
   }
 
 {- | Default TLS settings.
@@ -160,7 +158,7 @@ data TLSSettings = TLSSettings
 * Loads certificate from @certificate.pem@ and key from @key.pem@
 * Uses @default_tls13@ cipher policy
 * No client certificate authentication
-* Uses 'basicTicketKeyManager' for session ticket support
+* Uses 'basicTicketKeyManager' with 2 hour encrypt\/decrypt and 13 hour decrypt lifetimes
 -}
 defaultTlsSettings :: TLSSettings
 defaultTlsSettings =
@@ -168,7 +166,7 @@ defaultTlsSettings =
     { tlsCertSettings = CertFromFile "certificate.pem" [] "key.pem"
     , tlsCipherPreferences = "default_tls13"
     , tlsWantClientCert = CertAuthNone
-    , tlsTicketKeyManager = Just basicTicketKeyManager
+    , tlsTicketKeyManager = Just $ basicTicketKeyManager (2 * 60 * 60) (13 * 60 * 60)
     }
 
 --------------------------------------------------------------------------------
@@ -233,59 +231,56 @@ tlsSettingsChainMemory cert chain key =
 
 {- | Basic ticket key manager with automatic key rotation.
 
+Parameters:
+
+* @encryptDecryptLifetimeSecs@: How long (in seconds) a key can both encrypt and decrypt tickets
+* @decryptLifetimeSecs@: How long (in seconds) a key can decrypt after it stops encrypting
+
 This manager:
 
-* Sets encrypt+decrypt key lifetime to 2 hours
-* Sets decrypt-only key lifetime to 13 hours (total key validity of 15 hours)
+* Sets the encrypt\/decrypt and decrypt lifetimes as specified
 * Installs an initial key immediately
-* Rotates in a new key every 1 hour 59 minutes
+* Rotates in a new key every @encryptDecryptLifetimeSecs / 2@ seconds
 
 The key rotation schedule ensures that:
 
-* New tickets are always encrypted with a key that won't expire for 2 hours
+* New tickets are always encrypted with a key that won't expire soon
 * Old tickets remain valid for decryption during the overlap period
 * Gradual key rollover provides seamless session resumption
-
-This is a good default for most server deployments.
 -}
-basicTicketKeyManager :: TicketKeyOps -> IO (IO ())
-basicTicketKeyManager ops = do
+basicTicketKeyManager :: Word64 -> Word64 -> TicketKeyOps -> IO (IO ())
+basicTicketKeyManager encryptDecryptLifetimeSecs decryptLifetimeSecs ops = do
   -- Set key lifetimes
-  ops.setEncryptLifetime encryptLifetimeSecs
+  ops.setEncryptDecryptLifetime encryptDecryptLifetimeSecs
   ops.setDecryptLifetime decryptLifetimeSecs
   -- Install initial key
   installKey 0
   -- Return the rotation action
   pure $ rotateKeys 1
  where
-  encryptLifetimeSecs, decryptLifetimeSecs :: Word64
-  encryptLifetimeSecs = 2 * 60 * 60 -- 2 hours
-  decryptLifetimeSecs = 13 * 60 * 60 -- 13 hours (decrypt-only after encrypt expires)
-  rotateIntervalMicros :: Int
-  rotateIntervalMicros = (1 * 60 + 59) * 60 * 1_000_000 -- 1:59 in microseconds
+  rotateIntervalMicros :: Integer
+  rotateIntervalMicros = fromIntegral encryptDecryptLifetimeSecs * 1_000_000 `div` 2
+
   installKey :: Word64 -> IO ()
   installKey counter = do
-    -- Generate key name from counter
     let keyName = BS8.pack $ "key" <> show counter
-    -- Generate 32 bytes of random key material
     keyData <- getEntropy 32
-    -- Add the key
     ops.addTicketKey keyName keyData
 
   rotateKeys :: Word64 -> IO ()
   rotateKeys counter = do
-    threadDelay rotateIntervalMicros
+    delay rotateIntervalMicros
     installKey counter
     rotateKeys (counter + 1)
 
 --------------------------------------------------------------------------------
--- Running TLS
+-- Running a Warp Server with TLS
 --------------------------------------------------------------------------------
 
 {- | Run a Warp server with TLS support.
 
 This is the simplest way to run a TLS server. It initializes the s2n-tls
-library, binds to the port specified in 'Settings' (default 3000), and
+library, binds to the port specified in 'Settings', and
 handles TLS connections.
 
 @
@@ -317,11 +312,10 @@ runTLSSocket tlsSet settings sock app =
 
 {- | Run a Warp server with TLS support, using an existing 'S2nTls' handle.
 
-This binds to the port specified in 'Settings' (default 3000) and
+This binds to the port specified in 'Settings' and
 handles TLS connections using s2n-tls.
 
-Use this when you need to share the 'S2nTls' handle across multiple
-servers or when using dynamic library loading.
+Use this when the specific s2n-tls library will be dynamically selected at runtime.
 -}
 runTLSLib :: S2nTls -> TLSSettings -> Settings -> Application -> IO ()
 runTLSLib tls tlsSet settings app = do
@@ -337,8 +331,7 @@ runTLSLib tls tlsSet settings app = do
 This is useful when you need more control over socket creation,
 such as for Unix domain sockets or when using socket activation.
 
-Use this when you need to share the 'S2nTls' handle across multiple
-servers or when using dynamic library loading.
+Use this when the specific s2n-tls library will be dynamically selected at runtime
 -}
 runTLSSocketLib :: S2nTls -> TLSSettings -> Settings -> Socket -> Application -> IO ()
 runTLSSocketLib tls tlsSet@TLSSettings{..} settings sock app = do
@@ -354,7 +347,7 @@ runTLSSocketLib tls tlsSet@TLSSettings{..} settings sock app = do
       -- Create TicketKeyOps for the key manager
       let ops =
             TicketKeyOps
-              { setEncryptLifetime = tls.setTicketEncryptDecryptKeyLifetime config
+              { setEncryptDecryptLifetime = tls.setTicketEncryptDecryptKeyLifetime config
               , setDecryptLifetime = tls.setTicketDecryptKeyLifetime config
               , addTicketKey = \keyName keyData ->
                   tls.addTicketCryptoKey config keyName keyData Nothing
@@ -403,11 +396,6 @@ loadCertSettings tls config certSettings = case certSettings of
     chainPems <- mapM BS.readFile chainFiles
     loadCertPems tls config certPem chainPems keyPem
   CertFromMemory certPem chainPems keyPem ->
-    loadCertPems tls config certPem chainPems keyPem
-  CertFromRef certRef chainRefs keyRef -> do
-    certPem <- readIORef certRef
-    keyPem <- readIORef keyRef
-    chainPems <- mapM readIORef chainRefs
     loadCertPems tls config certPem chainPems keyPem
 
 -- | Load certificate PEMs into config. Chain certs are concatenated with the main cert.
