@@ -190,6 +190,11 @@ See the [Memory Locking](#memory-locking-mlock) section above for details.
 1. **Session resumption**: The `SessionManager` type is defined but not yet
    wired to s2n's session cache callbacks. This requires low-level FFI work.
 
+## Related Packages
+
+- [s2n-tls](https://github.com/goertzenator/s2n-tls) - High-level Haskell bindings (used internally by this package)
+- [s2n-tls-ffi](https://github.com/goertzenator/s2n-tls-ffi) - Low-level FFI bindings for direct s2n-tls access
+
 ## License
 
-BSD-3-Clause
+Apache-2.0

@@ -11,16 +11,17 @@ license-file:       LICENSE
 author:             Daniel Goertzen
 maintainer:         daniel.goertzen@gmail.com
 copyright:          2026 Daniel Goertzen
-category:           Web
+category:           Web, Network
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
                     README.md
-tested-with:        GHC == 9.6.4
-                  , GHC == 9.8.2
+tested-with:        GHC == 9.8.2
+homepage:           https://github.com/goertzenator/warp-s2n-tls
+bug-reports:        https://github.com/goertzenator/warp-s2n-tls/issues
 
 source-repository head
     type:     git
-    location: https://github.com/yourusername/warp-s2n-tls.git
+    location: https://github.com/goertzenator/warp-s2n-tls.git
 
 library
     exposed-modules:    Network.Wai.Handler.WarpS2N
