@@ -38,6 +38,75 @@ main = withS2nTls (Dynamic "/path/to/libs2n.so") $ \\tls -> do
         warpSet = setPort 443 defaultSettings
     runTLSLib tls tlsSet warpSet myApp
 @
+
+= Memory Locking (mlock)
+
+== What is mlock?
+
+s2n-tls uses the Linux @mlock()@ system call to lock memory pages containing
+cryptographic secrets (private keys, session keys, etc.) into RAM. This prevents
+the operating system from swapping these pages to disk, where they could
+potentially be recovered by an attacker after your application terminates.
+
+== The RLIMIT_MEMLOCK Limit
+
+Linux enforces a per-process limit on how much memory can be locked, controlled
+by @RLIMIT_MEMLOCK@. On many systems, this defaults to just __64 KB__ (or even
+32 KB on some Debian versions). Since s2n-tls locks memory for all TLS
+connections and cryptographic operations, this limit can be exhausted quickly
+in applications handling multiple connections.
+
+When the limit is exceeded, you'll see errors like:
+
+> Error Message: 'error calling mlock'
+> Debug String: 'Error encountered in s2n_mem.c line 106'
+
+== Solutions
+
+__Option 1: Increase the mlock limit (recommended for production)__
+
+Raise the limit for your shell session:
+
+> ulimit -l unlimited
+
+Or set it to a specific value (in KB):
+
+> ulimit -l 65536  # 64 MB
+
+For systemd services, add to your unit file:
+
+> [Service]
+> LimitMEMLOCK=infinity
+
+For persistent user limits, add to @\/etc\/security\/limits.conf@:
+
+> youruser  soft  memlock  unlimited
+> youruser  hard  memlock  unlimited
+
+__Option 2: Disable mlock (acceptable for development\/testing)__
+
+Set the environment variable to disable memory locking entirely:
+
+> S2N_DONT_MLOCK=1 ./your-application
+
+== Security Considerations
+
+* __With mlock enabled__: Secrets are protected from being written to swap,
+  reducing the risk of recovery from disk. This is the recommended setting
+  for production deployments handling sensitive data.
+
+* __With mlock disabled__: Secrets may be swapped to disk under memory
+  pressure. This is generally acceptable for development, testing, and
+  applications where the threat model doesn't include disk forensics.
+
+* __Note__: Even with mlock enabled, laptop suspend\/hibernate modes may
+  save RAM contents to disk regardless of memory locks.
+
+== Running Tests
+
+Tests may exhaust the default mlock limit. Use:
+
+> S2N_DONT_MLOCK=1 cabal test
 -}
 module Network.Wai.Handler.WarpS2N (
   -- * Running TLS
