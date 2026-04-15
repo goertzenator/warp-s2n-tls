@@ -566,16 +566,8 @@ sendFileTLS tls conn fileId offset len hook headers = do
 closeTLSConnection :: S2nTls -> S2N.Connection -> Socket -> IO ()
 closeTLSConnection tls conn sock = do
   -- Attempt graceful TLS shutdown, ignore errors
-  void (shutdownLoop tls conn) `catch` \(_ :: S2nError) -> pure ()
+  void (tls.blockingShutdown conn) `catch` \(_ :: S2nError) -> pure ()
   Socket.close sock
- where
-  shutdownLoop t c = do
-    result <- t.shutdown c
-    case result of
-      Right () -> pure ()
-      Left BlockedOnRead -> shutdownLoop t c
-      Left BlockedOnWrite -> shutdownLoop t c
-      Left _ -> pure ()
 
 -- | Convert TlsVersion to (major, minor) for Warp's Transport.
 tlsVersionToMajorMinor :: TlsVersion -> (Int, Int)
