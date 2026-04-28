@@ -15,6 +15,8 @@ category:           Web, Network
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
                     README.md
+extra-source-files: test/certs/server.pem
+                    test/certs/server-key.pem
 tested-with:        GHC == 9.8.2
 homepage:           https://github.com/goertzenator/warp-s2n-tls
 bug-reports:        https://github.com/goertzenator/warp-s2n-tls/issues
@@ -23,18 +25,23 @@ source-repository head
     type:     git
     location: https://github.com/goertzenator/warp-s2n-tls.git
 
+source-repository this
+    type:     git
+    location: https://github.com/goertzenator/warp-s2n-tls.git
+    tag:      v0.1.0.0
+
 library
     exposed-modules:    Network.Wai.Handler.WarpS2N
     build-depends:      base >= 4.16 && < 5
                       , warp >= 3.3 && < 4
                       , wai >= 3.2 && < 4
-                      , s2n-tls
-                      , async
-                      , bytestring
-                      , entropy
-                      , network >= 3.0
-                      , streaming-commons
-                      , unbounded-delays
+                      , s2n-tls ^>= 0.1
+                      , async >= 2.2 && < 2.3
+                      , bytestring >= 0.10 && < 0.13
+                      , entropy >= 0.4 && < 0.5
+                      , network >= 3.0 && < 3.3
+                      , streaming-commons >= 0.2 && < 0.3
+                      , unbounded-delays >= 0.1 && < 0.2
     hs-source-dirs:     src
     default-language:   GHC2021
     default-extensions: OverloadedRecordDot

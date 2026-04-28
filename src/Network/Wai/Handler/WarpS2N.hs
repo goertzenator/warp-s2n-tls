@@ -138,9 +138,14 @@ module Network.Wai.Handler.WarpS2N (
   basicTicketKeyManager,
 
   -- * Re-exports from s2n-tls
+
+  -- | Client certificate authentication mode, used with 'tlsWantClientCert'.
   CertAuthType (CertAuthType),
+  -- | Do not request a client certificate.
   pattern CertAuthNone,
+  -- | Request a client certificate but accept connections that do not provide one.
   pattern CertAuthOptional,
+  -- | Require a client certificate; reject connections that do not provide one.
   pattern CertAuthRequired,
 ) where
 
@@ -199,7 +204,7 @@ data TicketKeyOps = TicketKeyOps
 
 {- | Ticket key manager callback type.
 
-The callback receives 'TicketKeyOps' and should:
+The callback receives t'TicketKeyOps' and should:
 
 1. Set up initial ticket encryption keys (runs before server accepts connections)
 2. Return an action to be run in an async that rotates keys over time
@@ -379,7 +384,7 @@ runTLSSocket tlsSet settings sock app =
   withS2nTls Linked $ \tls ->
     runTLSSocketLib tls tlsSet settings sock app
 
-{- | Run a Warp server with TLS support, using an existing 'S2nTls' handle.
+{- | Run a Warp server with TLS support, using an existing t'S2nTls.S2nTls' handle.
 
 This binds to the port specified in 'Settings' and
 handles TLS connections using s2n-tls.
@@ -395,7 +400,7 @@ runTLSLib tls tlsSet settings app = do
     Socket.close
     (\sock -> runTLSSocketLib tls tlsSet settings sock app)
 
-{- | Run a Warp server with TLS support on an existing socket, using an existing 'S2nTls' handle.
+{- | Run a Warp server with TLS support on an existing socket, using an existing t'S2nTls.S2nTls' handle.
 
 This is useful when you need more control over socket creation,
 such as for Unix domain sockets or when using socket activation.
