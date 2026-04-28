@@ -4,7 +4,7 @@ version:            0.1.0.0
 synopsis:           TLS support for Warp via s2n-tls
 description:
     This package provides TLS support for the Warp web server using
-    the s2n-tls library, an alternative to the warp-tls package.
+    the s2n-tls library.
 
 license:            Apache-2.0
 license-file:       LICENSE
