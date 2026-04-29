@@ -33,7 +33,7 @@ source-repository this
 library
     exposed-modules:    Network.Wai.Handler.WarpS2N
     build-depends:      base >= 4.16 && < 5
-                      , warp >= 3.3 && < 4
+                      , warp >= 3.4.13 && < 4
                       , wai >= 3.2 && < 4
                       , s2n-tls ^>= 0.1
                       , async >= 2.2 && < 2.3
@@ -42,6 +42,7 @@ library
                       , network >= 3.0 && < 3.3
                       , streaming-commons >= 0.2 && < 0.3
                       , unbounded-delays >= 0.1 && < 0.2
+                      , stm >= 2.5 && < 2.6
     hs-source-dirs:     src
     default-language:   GHC2021
     default-extensions: OverloadedRecordDot

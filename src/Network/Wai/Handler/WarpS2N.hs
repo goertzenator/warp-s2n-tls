@@ -150,6 +150,7 @@ module Network.Wai.Handler.WarpS2N (
 ) where
 
 import Control.Concurrent.Async (withAsync)
+import Control.Concurrent.STM (newTVarIO)
 import Control.Concurrent.Thread.Delay (delay)
 import Control.Exception (bracket, catch, onException)
 import Control.Monad (void)
@@ -204,7 +205,7 @@ data TicketKeyOps = TicketKeyOps
 
 {- | Ticket key manager callback type.
 
-The callback receives t'TicketKeyOps' and should:
+The callback receives 'TicketKeyOps' and should:
 
 1. Set up initial ticket encryption keys (runs before server accepts connections)
 2. Return an action to be run in an async that rotates keys over time
@@ -384,7 +385,7 @@ runTLSSocket tlsSet settings sock app =
   withS2nTls Linked $ \tls ->
     runTLSSocketLib tls tlsSet settings sock app
 
-{- | Run a Warp server with TLS support, using an existing t'S2nTls.S2nTls' handle.
+{- | Run a Warp server with TLS support, using an existing 'S2nTls' handle.
 
 This binds to the port specified in 'Settings' and
 handles TLS connections using s2n-tls.
@@ -400,7 +401,7 @@ runTLSLib tls tlsSet settings app = do
     Socket.close
     (\sock -> runTLSSocketLib tls tlsSet settings sock app)
 
-{- | Run a Warp server with TLS support on an existing socket, using an existing t'S2nTls.S2nTls' handle.
+{- | Run a Warp server with TLS support on an existing socket, using an existing 'S2nTls' handle.
 
 This is useful when you need more control over socket creation,
 such as for Unix domain sockets or when using socket activation.
@@ -530,6 +531,7 @@ wrapS2nConnection ::
 wrapS2nConnection tls conn clientSock clientAddr = do
   writeBuffer <- allocateWriteBuffer
   http2Ref <- newIORef False
+  inProgressTVar <- newTVarIO 0
 
   pure
     WarpI.Connection
@@ -542,6 +544,7 @@ wrapS2nConnection tls conn clientSock clientAddr = do
       , connWriteBuffer = writeBuffer
       , connHTTP2 = http2Ref
       , connMySockAddr = clientAddr
+      , connAppsInProgress = inProgressTVar
       }
 
 -- | Receive data into a buffer over TLS.

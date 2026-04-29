@@ -31,7 +31,7 @@ To load libs2n.so at runtime instead of linking:
 ```haskell
 main :: IO ()
 main = withS2nTls (Dynamic "/usr/local/lib/libs2n.so") $ \tls -> do
-    runTLS tls tlsSet warpSet myApp
+    runTLSLib tls tlsSet warpSet myApp
 ```
 
 ## Memory Locking (mlock)
