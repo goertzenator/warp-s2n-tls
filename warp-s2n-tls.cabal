@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               warp-s2n-tls
-version:            0.1.0.0
+version:            0.1.1.0
 synopsis:           TLS support for Warp via s2n-tls
 description:
     This package provides TLS support for the Warp web server using
@@ -28,7 +28,7 @@ source-repository head
 source-repository this
     type:     git
     location: https://github.com/goertzenator/warp-s2n-tls.git
-    tag:      v0.1.0.0
+    tag:      v0.1.1.0
 
 library
     exposed-modules:    Network.Wai.Handler.WarpS2N

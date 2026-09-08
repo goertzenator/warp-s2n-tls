@@ -4,6 +4,7 @@ module ProtocolTests (protocolSpec) where
 
 import Control.Applicative
 import Control.Exception (SomeException, bracket, try)
+import Data.ByteString (ByteString)
 import Data.Default.Class (def)
 import Network.HTTP.Types (status200)
 import Network.Socket qualified as Socket
@@ -11,7 +12,12 @@ import Network.Socket.ByteString qualified as SocketBS
 import Network.TLS qualified as TLS
 import Network.TLS.Extra.Cipher qualified as TLS
 import Network.Wai (responseLBS)
-import Network.Wai.Handler.Warp (defaultSettings, setBeforeMainLoop)
+import Network.Wai.Handler.Warp (
+    Settings,
+    defaultSettings,
+    setBeforeMainLoop,
+    setHTTP2Disabled,
+ )
 import Network.Wai.Handler.WarpS2N (
     TLSSettings (..),
     runTLSSocketLib,
@@ -28,6 +34,33 @@ protocolSpec :: SpecWith S2nTls
 protocolSpec = do
     describe "TLS version negotiation" versionNegotiationSpec
     describe "Cipher preferences" cipherPreferencesSpec
+    describe "ALPN" alpnSpec
+
+alpnSpec :: SpecWith S2nTls
+alpnSpec = do
+    it "negotiates h2 when the client offers it" $ \tls -> do
+        let serverSettings = tlsSettings testCertPath testKeyPath
+        proto <- withTestServerGetALPN tls serverSettings defaultSettings ["h2", "http/1.1"]
+        proto `shouldBe` Just "h2"
+
+    it "selects http/1.1 when the client does not offer h2" $ \tls -> do
+        let serverSettings = tlsSettings testCertPath testKeyPath
+        proto <- withTestServerGetALPN tls serverSettings defaultSettings ["http/1.1"]
+        proto `shouldBe` Just "http/1.1"
+
+    -- The advertised list is derived from Warp's own settingsHTTP2Enabled, so
+    -- setHTTP2Disabled has to withdraw h2 from the offer entirely.  Leaving it
+    -- advertised would let a client select a protocol Warp then refuses to
+    -- speak, which is worse than never offering it.
+    it "withdraws h2 when the Warp settings disable HTTP/2" $ \tls -> do
+        let serverSettings = tlsSettings testCertPath testKeyPath
+        proto <-
+            withTestServerGetALPN
+                tls
+                serverSettings
+                (setHTTP2Disabled defaultSettings)
+                ["h2", "http/1.1"]
+        proto `shouldBe` Just "http/1.1"
 
 versionNegotiationSpec :: SpecWith S2nTls
 versionNegotiationSpec = do
@@ -99,6 +132,35 @@ withTestServerGetVersion tls tlsSet clientVersions =
             let version = TLS.infoVersion <$> info
             TLS.bye ctx
             pure version
+
+{- | Helper: Start server and report the ALPN protocol the client settles on.
+
+Takes the Warp 'Settings' explicitly, because the advertised protocol list is
+derived from them.
+-}
+withTestServerGetALPN :: S2nTls -> TLSSettings -> Settings -> [ByteString] -> IO (Maybe ByteString)
+withTestServerGetALPN tls tlsSet baseWarpSet clientProtos =
+    bracket bindFreePort (Socket.close . fst) $ \(sock, port) -> do
+        serverReady <- newEmptyTMVarIO
+        let app _ respond = respond $ responseLBS status200 [] "blarg!"
+            warpSet = setBeforeMainLoop (atomically $ putTMVar serverReady ()) baseWarpSet
+        withAsync (runTLSSocketLib tls tlsSet warpSet sock app) $ \as -> do
+            atomically $ waitSTM as <|> takeTMVar serverReady
+            threadDelay 10_000
+            backend <- makeClientSocket port
+            params <- makeClientParams [TLS.TLS13, TLS.TLS12]
+            let alpnParams =
+                    params
+                        { TLS.clientHooks =
+                            (TLS.clientHooks params)
+                                { TLS.onSuggestALPN = pure (Just clientProtos)
+                                }
+                        }
+            ctx <- TLS.contextNew backend alpnParams
+            TLS.handshake ctx
+            proto <- TLS.getNegotiatedProtocol ctx
+            TLS.bye ctx
+            pure proto
 
 -- | Helper: Start server and test if connection succeeds
 withTestServerConnect :: S2nTls -> TLSSettings -> IO Bool
