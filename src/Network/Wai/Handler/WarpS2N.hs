@@ -413,6 +413,16 @@ runTLSSocketLib tls tlsSet@TLSSettings{..} settings sock app = do
   -- Initialize s2n config
   config <- initS2nConfig tls tlsSet
 
+  -- Advertise ALPN protocols.  Warp selects HTTP/2 from the negotiated
+  -- protocol on the Transport, so without this it never sees "h2" and every
+  -- connection stays HTTP/1.1.  Deriving the list from the caller's Warp
+  -- settings keeps 'setHTTP2Disabled' working as the single kill switch
+  -- rather than adding a second, separately-configured one here.
+  tls.setProtocolPreferences config
+    $ if WarpI.settingsHTTP2Enabled settings
+      then ["h2", "http/1.1"]
+      else ["http/1.1"]
+
   -- Set up ticket key manager if configured, then run the server
   rotateAction <- case tlsTicketKeyManager of
     Nothing -> pure (pure ()) -- dummy rotation action
